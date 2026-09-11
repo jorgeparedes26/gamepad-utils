@@ -35,7 +35,7 @@ PITCH_INVERT = True
 VERTICAL_SLIDE_INVERT = True
 
 BANK_SENSITIVITY = 1.2
-SNIPING_SENSITIVITY_FACTOR = 0.25         # Reduces aiming speed when sniper_mode_active == True
+SNIPING_SENSITIVITY_FACTOR = 0.35         # Reduces aiming speed when sniper_mode_active == True
 
 L2, R2 = ecodes.ABS_Z, ecodes.ABS_RZ   # raw trigger source codes on each pad
 
@@ -118,12 +118,12 @@ def merge(a, b, invert):
 
 def normalize_joystick_axis_from_8bits(raw_val: int) -> float:
     """Converts a range (-128 to 127) cleanly to -1.0..1.0."""
-    centered = raw_val - 128
+    centered = raw_val - (-AXIS_OUT_MIN)
     
-    raw_val = max(-128, min(127, centered))
+    raw_val = max(AXIS_OUT_MIN, min(AXIS_OUT_MAX, centered))
     if raw_val < 0:
-        return raw_val / 128.0
-    return raw_val / 128.0
+        return raw_val / - AXIS_OUT_MIN
+    return raw_val / AXIS_OUT_MAX
 
 # def denormalize_joystick_axis(normalized_val: float) -> int:
 #     """Converts a processed -1.0..1.0 float back to a signed 16-bit integer."""
@@ -653,6 +653,8 @@ def main():
     b_l2 = b_r2 = 0.0   # pad B triggers
     last_pitch = last_yaw = last_bank = last_throttle = last_vertical_slide = last_horizontal_slide =  0
 
+    last_normalized_vertical_slide = last_normalized_horizontal_slide = 0.0
+    
     #for mixing of stick and gyro values
     stick_yaw = 0.0
     stick_pitch = 0.0
@@ -716,10 +718,6 @@ def main():
     def emit_throttle():
         nonlocal last_throttle
         # print("b_l2:", b_l2, "b_r2:", b_r2)
-        
-
-
-
         out = merge(a_l2, a_r2, THROTTLE_INVERT)
         if out != last_throttle:
             ui.write(ecodes.EV_ABS, THROTTLE_AXIS, out)
@@ -903,11 +901,11 @@ def main():
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_Y:
                             # Normalize the raw stick input to -1.0..+1.0
                             stick_vertical_slide = normalize_joystick_axis_from_8bits(e.value)
-                            stick_vertical_slide = stick_vertical_slide  * (-1 if VERTICAL_SLIDE_INVERT else 1)
-                            stick_horizontal_slide_temp = normalize_joystick_axis_from_8bits(last_horizontal_slide) 
+                            last_normalized_vertical_slide = stick_vertical_slide = stick_vertical_slide  * (-1 if VERTICAL_SLIDE_INVERT else 1)
+                            #stick_horizontal_slide_temp = normalize_joystick_axis_from_8bits(last_horizontal_slide) 
 
                             # Apply radial calibration to the stick input
-                            _, stick_vertical_slide = radial_to_square_translation_sliding(stick_horizontal_slide_temp, stick_vertical_slide,return_axis_x=False, return_axis_y=True)
+                            _, stick_vertical_slide = radial_to_square_translation_sliding(last_normalized_horizontal_slide, stick_vertical_slide,return_axis_x=False, return_axis_y=True)
                             
                             # Denormalize back to 16-bit range for output
                             stick_vertical_slide = denormalize_joystick_axis_to_8bits(stick_vertical_slide)
@@ -915,11 +913,11 @@ def main():
     
 
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_X:
-                            stick_horizontal_slide = normalize_joystick_axis_from_8bits(e.value)
-                            stick_vertical_slide_temp = normalize_joystick_axis_from_8bits(last_vertical_slide) 
+                            last_normalized_horizontal_slide =  stick_horizontal_slide = normalize_joystick_axis_from_8bits(e.value)
+                            #stick_vertical_slide_temp = normalize_joystick_axis_from_8bits(last_vertical_slide) 
 
                             # Apply radial calibration to the stick input
-                            stick_horizontal_slide, _ = radial_to_square_translation_sliding(stick_horizontal_slide, stick_vertical_slide_temp,return_axis_x=True, return_axis_y=False)
+                            stick_horizontal_slide, _ = radial_to_square_translation_sliding(stick_horizontal_slide, last_normalized_vertical_slide,return_axis_x=True, return_axis_y=False)
                             
                             # Denormalize back to 8-bit range for output
                             stick_horizontal_slide = denormalize_joystick_axis_to_8bits(stick_horizontal_slide)
