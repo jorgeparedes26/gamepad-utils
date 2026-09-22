@@ -16,6 +16,7 @@ import sys
 import select
 import evdev
 import math
+import time
 from evdev import ecodes, AbsInfo, UInput
 
 # ---- tunables -------------------------------------------------------------
@@ -35,9 +36,12 @@ PITCH_INVERT = True
 VERTICAL_SLIDE_INVERT = True
 
 BANK_SENSITIVITY = 1.2
-SNIPING_SENSITIVITY_FACTOR = 0.35         # Reduces aiming speed when sniper_mode_active == True
+SNIPING_SENSITIVITY_FACTOR = 0.15         # Reduces aiming speed when sniper_mode_active == True
 
 L2, R2 = ecodes.ABS_Z, ecodes.ABS_RZ   # raw trigger source codes on each pad
+
+#For smoothing...
+dt = last_time  = 0
 
 # ---- button layers ---------------------------------------------------------
 
@@ -310,8 +314,9 @@ def expo_multiplier_blend(x: float, expo: float = 0.5) -> float:
 #Apply a clean 2D S-Curve specifically to your Right Stick
 def s_2d_curve(x: float) -> float:
     # Apply an elegant Smoothstep curve for aiming precision near center
-    curved_mag = 3 * (x ** 2) - 2 * (x ** 3)
-    return curved_mag
+    magnitude = abs(x)
+    curved_mag = 3 * (magnitude ** 2) - 2 * (magnitude ** 3)
+    return math.copysign(curved_mag, x)
 
 
 def apply_deadzone(
@@ -482,6 +487,60 @@ def calibrate_asymmetric_axis_with_deadzone(
         return (clamped_value + deadzone) / active_range
 
 
+"""
+min_smoothing: Used near the center stick. Heavy filtering for precision.
+max_smoothing: Used at maximum stick deflection. Raw, instant response.
+"""
+min_smoothing = 8.0
+max_smoothing = 30.0
+smoothed_pitch = 0.0
+smoothed_yaw = 0.0
+
+
+# def smooth_vector(target_pitch: float, target_yaw: float, dt: float,
+#                   ,return_pitch_axis: bool = True, return_yaw_axis: bool = True) -> tuple[float, float]:
+#     global smoothed_pitch
+#     global smoothed_yaw
+#     current_mag = math.sqrt(smoothed_pitch**2 + smoothed_yaw**2)
+#     target_mag = math.sqrt(target_pitch**2 + target_yaw**2)
+    
+#     if target_mag < 1e-5:
+#         if current_mag < 0.01:
+#             smoothed_pitch = 0.0
+#             smoothed_yaw = 0.0
+#             return 0.0, 0.0
+#         scale = current_mag + (1.0 - math.exp(-min_smoothing * dt)) * (0.0 - current_mag)
+#         scale = max(0.0, scale) / (current_mag + 1e-5)
+#         smoothed_pitch *= scale
+#         smoothed_yaw *= scale
+#         return smoothed_pitch, smoothed_yaw
+
+#     # --- DYNAMIC SMOOTHING LOGIC ---
+#     # Clamp target_mag to 1.0 just in case sensitivity pushes it slightly over
+#     normalized_mag = min(1.0, target_mag)
+    
+#     # Linearly interpolate (LERP) the smoothing factor based on stick deflection.
+#     # As target_mag approaches 1.0, current_smoothing approaches max_smoothing (snappier).
+#     current_smoothing = min_smoothing + (max_smoothing - min_smoothing) * normalized_mag
+    
+#     # Calculate alpha using our new dynamic smoothing factor
+#     alpha = 1.0 - math.exp(-current_smoothing * dt)
+#     new_mag = current_mag + alpha * (target_mag - current_mag)
+#     # -------------------------------
+
+#     # Angle Preservation Step
+#     scale = new_mag / target_mag
+
+#     smoothed_pitch = smoothed_yaw = 0
+
+#     if return_pitch_axis:
+#         smoothed_pitch = target_pitch * scale
+#     if return_yaw_axis:
+#         smoothed_yaw = target_yaw * scale
+
+#     return smoothed_pitch, smoothed_yaw
+
+
 def apply_radial_calibration_pitch_yaw(
     pitch: float, 
     yaw: float, 
@@ -495,6 +554,24 @@ def apply_radial_calibration_pitch_yaw(
     # 1. Clamp inputs to ensure they don't break logic on hyper-deflected controllers
     pitch = max(-1.0, min(1.0, pitch))
     yaw = max(-1.0, min(1.0, yaw))
+
+    """
+    If the thumb movement is heavily biased toward one axis, 
+    snap the minor axis to 0.0 to prevent cross-coupling.
+    Inputs assume a range of -1.0 to 1.0.
+    """
+    isolation_threshold = 0.20
+    abs_yaw = abs(yaw)
+    abs_pitch = abs(pitch)
+    # If looking/turning hard left or right, and vertical movement is tiny:
+    if abs_yaw > isolation_threshold and abs_pitch < isolation_threshold:
+        pitch = 0.0  # Erase the accidental pitch bleed
+    # Conversely, if looking straight up/down, erase accidental yaw bleed
+    elif abs_pitch > isolation_threshold and abs_yaw < isolation_threshold:
+        yaw = 0.0
+
+
+    #print ("yaw/pitch", yaw, pitch)
     
     # 2. Calculate the magnitude (hypotenuse) of the joystick vector using Pythagorean theorem
     magnitude = math.sqrt(pitch**2 + yaw**2)
@@ -527,7 +604,7 @@ def apply_radial_calibration_pitch_yaw(
     rescaled_magnitude = (magnitude - lower_deadzone) / active_range
 
     if state['sniper_mode_active']:
-        scale = 1
+        scale = rescaled_magnitude / magnitude
     else:
         # Apply an elegant Smoothstep curve for aiming precision near center
         curved_mag = s_2d_curve(rescaled_magnitude)
@@ -535,10 +612,26 @@ def apply_radial_calibration_pitch_yaw(
  
     # 6. Reconstruct the Vector components
     # Multiply the directional unit vector by our new calculated scale
-    scale = rescaled_magnitude / magnitude
+    #scale = rescaled_magnitude / magnitude
     pitch_out = yaw_out = 0
+
+    #final_factor = (SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1) * scale * sensitivity
+
+    #if state['sniper_mode_active']: 
+    #    final_factor = final_factor * SNIPING_SENSITIVITY_FACTOR
     
+    current_time = time.perf_counter()
+    #global dt
+    global last_time
+    delta_time = current_time - last_time
+    last_time = current_time
+    # --- SAFETY CATCH ---
+    # If the game hitches, freezes, or you drag the window, dt could spike.
+    # A massive dt can cause physics or filters to break. Clamp it to a maximum (e.g., 0.1s).
+    delta_time = min(0.1, delta_time)
+
     if return_pitch_axis:
+        #pitch_out =  smooth_vector(pitch )
         pitch_out = pitch * scale * sensitivity
     if return_yaw_axis:
         yaw_out = yaw * scale * sensitivity
@@ -699,9 +792,9 @@ def main():
         #Normalize before applying deadzone
         #out = apply_deadzone(out, 0.01)  # Apply a small deadzone to avoid jitter   
         bank_out = normalize_axis(bank_out, 3200)  # Normalize to -1.0..+1.0
-
+        
         bank_out = bank_out * (-1 if BANK_INVERT else 1) 
-        bank_out = apply_deadzone(bank_out, 0.085) #* BANK_SENSITIVITY
+        bank_out = apply_deadzone(bank_out, 0.15) #* BANK_SENSITIVITY
 
         bank_out = expo_multiplier_blend (bank_out, 0.50)
         bank_out = denormalize_joystick_axis_to_8bits(bank_out)
@@ -764,6 +857,9 @@ def main():
 
     fds = {srcA.fd: srcA, srcB.fd: srcB}
 
+    # Initialize the clock (for smoothing...)
+    global last_time
+    last_time = time.perf_counter()
     try:
         while True:
             r, _, _ = select.select(fds, [], [])
@@ -775,22 +871,6 @@ def main():
                         # consumed here and never passed through as ordinary input.
                         if e.type == ecodes.EV_KEY and e.code == MOD_SELECT:
                             state['select_held'] = (e.value != 0)
-                            #Manejo de afterburner para cambiar dinámicamente con el botón de SELECT
-                            #A diferencia de las demás acciones (Firing por ejemplo, cuando estás disparando se ingigboraora el botón select)
-                            # active = state["active_layered_buttons"]
-                            # if state['select_held'] and a_r2 == 0 and a_l2 > 0: #We are going forward
-                            #     print("OHHHH")
-                            #     button = active.get(712)                                  
-                            #     if button is None:
-                            #         print("AAAAAHHHH")
-                            #         active[712] = 712                                    
-                            #         ui.write(ecodes.EV_KEY, 712, 1)
-                            # else:
-                            #     button = active.pop(712, 712) 
-                            #     if button is not None:
-                            #         print("BUTTON:", button)
-                            #         ui.write(ecodes.EV_KEY, button, 0)
-                            # ui.syn()                                                
                             continue     
                         if e.type == ecodes.EV_ABS and e.code == MOD_DPAD_UP_AXIS:
 
@@ -932,39 +1012,39 @@ def main():
                             stick_pitch = stick_pitch * (-1 if PITCH_INVERT else 1)
                             
                             stick_pitch = calibrate_asymmetric_axis_with_deadzone(stick_pitch, -0.98, 0.90, 0)
-                            #print("stick_pitch:", stick_pitch)
+                            #print("INICIO stick_pitch:", stick_pitch)
 
-                            if state['sniper_mode_active'] and stick_pitch != 0: 
-                                stick_pitch = stick_pitch * SNIPING_SENSITIVITY_FACTOR
+
 
 
                             stick_yaw_temp = normalize_joystick_axis_from_8bits(last_yaw)
+
+                            #print ("last_yaw/stick_yaw_temp", last_yaw, stick_yaw_temp)
+
+
                             stick_pitch, _ = apply_radial_calibration_pitch_yaw(stick_pitch,
                                                                                 stick_yaw_temp, 
-                                                                                (0 if state['sniper_mode_active'] else 0.15), 0.07, 
-                                                                                1, 
+                                                                                0, 0, 
+                                                                                SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
                                                                                 return_pitch_axis=True, 
                                                                                 return_yaw_axis=False)
-                            print("stick_pitch:", stick_pitch)
+                            # print("stick_pitch:", stick_pitch)
                             
                             stick_pitch = denormalize_joystick_axis_to_8bits(stick_pitch)
                             if emit_pitch(): ui.syn()
                             #ui.write(e.type, e.code, mix_stick_gyro(stick_pitch, gyro_pitch, 255))
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RX:
                             stick_yaw = normalize_joystick_axis_from_8bits(e.value)   
-                            #stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw, -0.97, 0.89, 0)
-
-                             
-                            if state['sniper_mode_active'] and stick_yaw != 0: 
-                                stick_yaw = stick_yaw * SNIPING_SENSITIVITY_FACTOR
+                            stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw, -0.97, 0.89, 0)
 
                             #print("INICIO stick_yaw:", stick_yaw)
 
                             stick_pitch_temp = normalize_joystick_axis_from_8bits(last_pitch)
                             _, stick_yaw= apply_radial_calibration_pitch_yaw(stick_pitch_temp, 
                                                                             stick_yaw, 
-                                                                            (0 if state['sniper_mode_active'] else 0.15), 0.1,
-                                                                            1, return_pitch_axis=False,
+                                                                            0,0,
+                                                                            SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
+                                                                            return_pitch_axis=False,
                                                                             return_yaw_axis=True)
                             #print("stick_pitch_temp:", stick_pitch_temp)
                        
@@ -1007,3 +1087,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+import math
