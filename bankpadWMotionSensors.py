@@ -40,9 +40,6 @@ SNIPING_SENSITIVITY_FACTOR = 0.15         # Reduces aiming speed when sniper_mod
 
 L2, R2 = ecodes.ABS_Z, ecodes.ABS_RZ   # raw trigger source codes on each pad
 
-#For smoothing...
-dt = last_time  = 0
-
 # ---- button layers ---------------------------------------------------------
 
 # ---- button layers --------------------------------------------------------
@@ -52,6 +49,7 @@ dt = last_time  = 0
 MOD_SELECT = ecodes.BTN_SELECT
 MOD_DPAD_UP_AXIS = ecodes.ABS_HAT0Y
 MOD_DPAD_DOWN_AXIS = ecodes.ABS_HAT0Y
+MOD_DPAD_RIGHT_AXIS = ecodes.ABS_HAT0X 
 
 
 # Nine buttons that can acquire alternate meanings.
@@ -68,10 +66,10 @@ LAYER_BUTTONS = (
     ecodes.BTN_TL2      #L2 
 )   
 
-# Exactly 27 extra virtual buttons.
+# Exactly 36 extra virtual buttons.
 EXTRA_BUTTONS = tuple(
     getattr(ecodes, f"BTN_TRIGGER_HAPPY{i}")
-    for i in range(1, 28) 
+    for i in range(1, 37) 
 )
 
 # State variables
@@ -80,12 +78,12 @@ state = {
     'select_held': False,
     'dpad_up_held': False,
     'dpad_down_held': False,
+    'dpad_right_held': False,
     # physical source button -> (event type, output code)
     # This is what makes button releases safe if a modifier is released first.
     'active_layered_buttons': {}
 }
 
-SNIPER_MODE_BUTTON = ecodes.ABS_HAT0X 
 # ---------------------------------------------------------------------------
 
 def scale_trigger(v):
@@ -120,14 +118,28 @@ def merge(a, b, invert):
 #         return raw_val / 32768.0
 #     return raw_val / 32767.0
 
-def normalize_joystick_axis_from_8bits(raw_val: int) -> float:
-    """Converts a range (-128 to 127) cleanly to -1.0..1.0."""
-    centered = raw_val - (-AXIS_OUT_MIN)
+# def normalize_joystick_axis_from_8bits(raw_val: int) -> float:
+#     """Converts a range (-128 to 127) cleanly to -1.0..1.0."""
+#     centered = raw_val - 128
     
-    raw_val = max(AXIS_OUT_MIN, min(AXIS_OUT_MAX, centered))
-    if raw_val < 0:
-        return raw_val / - AXIS_OUT_MIN
-    return raw_val / AXIS_OUT_MAX
+#     raw_val = max(-128, min(127, centered))
+#     if raw_val < 0:
+#         return raw_val / - 128
+#     return raw_val / 127
+
+def normalize_joystick_axis_from_8bits(raw_val: int, is_zero_centered = False) -> float:
+    """Converts a range (-128 to 127) cleanly to -1.0..1.0."""
+    if not is_zero_centered:
+        raw_val = raw_val - 128
+
+    # 1. Clamp the raw 8-bit signed value first
+    clamped_val = max(-128, min(127, raw_val))
+    
+    # 2. Map cleanly to -1.0..1.0 based on the sign
+    if clamped_val < 0:
+        return clamped_val / 128.0
+    return clamped_val / 127.0
+
 
 # def denormalize_joystick_axis(normalized_val: float) -> int:
 #     """Converts a processed -1.0..1.0 float back to a signed 16-bit integer."""
@@ -137,7 +149,7 @@ def normalize_joystick_axis_from_8bits(raw_val: int) -> float:
 #     return round(normalized_val * 32767)
 
 def denormalize_joystick_axis_to_8bits(normalized_val: float) -> int:
-    """Converts a processed -1.0..1.0 float back to a signed 16-bit integer."""
+    """Converts a processed -1.0..1.0 float back to a signed 8-bit integer."""
     normalized_val = max(-1.0, min(1.0, normalized_val))
     if normalized_val < 0:
         return round(normalized_val * -AXIS_OUT_MIN)
@@ -607,9 +619,9 @@ def apply_radial_calibration_pitch_yaw(
         scale = rescaled_magnitude / magnitude
     else:
         # Apply an elegant Smoothstep curve for aiming precision near center
-        curved_mag = s_2d_curve(rescaled_magnitude)
+        curved_mag = expo_pure_jcurve(s_2d_curve(rescaled_magnitude))
         scale = curved_mag / magnitude
- 
+    #print("scale:", scale)
     # 6. Reconstruct the Vector components
     # Multiply the directional unit vector by our new calculated scale
     #scale = rescaled_magnitude / magnitude
@@ -632,9 +644,11 @@ def apply_radial_calibration_pitch_yaw(
 
     if return_pitch_axis:
         #pitch_out =  smooth_vector(pitch )
+        print("pitch:", pitch)
         pitch_out = pitch * scale * sensitivity
     if return_yaw_axis:
-        yaw_out = yaw * scale * sensitivity
+        print("yaw:", yaw)
+        yaw_out = yaw * scale * sensitivity * 1.3 #Tune, for difference beatween pitch and yaw in classic Descent
 
     return pitch_out, yaw_out
 
@@ -671,7 +685,7 @@ def build_caps_padA(srcA):
                 axes.append((THROTTLE_AXIS, AbsInfo(value=0, min=AXIS_OUT_MIN, max=AXIS_OUT_MAX,
                                                 fuzz=0, flat=0, resolution=0)))
 
-            print("AXESSS")
+            print("AXES:")
             for axis in axes:
                 print(axis)        
             out[ecodes.EV_ABS] = axes
@@ -696,6 +710,7 @@ def get_button_layer():
         1 = Select modifier layer
         2 = D-pad Up modifier layer
         3 = D-pad Down modifier layer
+        4 = D-pad Right modifier layer
     """
     if state['select_held']:
         return 1
@@ -703,6 +718,8 @@ def get_button_layer():
         return 2
     if state['dpad_down_held']:
         return 3
+    if state['dpad_right_held']:
+        return 4
     return 0
 
 def get_layered_button(button_code):
@@ -730,6 +747,10 @@ def get_layered_button(button_code):
     if layer == 3:
         # D-pad Up layer: EXTRA 19..27
         return EXTRA_BUTTONS[index + 18]
+
+    if layer == 4:
+        # D-pad Up layer: EXTRA 27..36
+        return EXTRA_BUTTONS[index + 27]
 
     return None
 
@@ -796,7 +817,10 @@ def main():
         bank_out = bank_out * (-1 if BANK_INVERT else 1) 
         bank_out = apply_deadzone(bank_out, 0.15) #* BANK_SENSITIVITY
 
-        bank_out = expo_multiplier_blend (bank_out, 0.50)
+        #bank_out = expo_multiplier_blend (bank_out, 0.50)
+        bank_out = expo_pure_jcurve(bank_out)
+
+
         bank_out = denormalize_joystick_axis_to_8bits(bank_out)
         #print("bank_out:", bank_out)
         
@@ -812,6 +836,14 @@ def main():
         nonlocal last_throttle
         # print("b_l2:", b_l2, "b_r2:", b_r2)
         out = merge(a_l2, a_r2, THROTTLE_INVERT)
+        #print("antes: ", out);
+       
+        if out > 0:
+            out = normalize_joystick_axis_from_8bits(out, True)
+            out = expo_pure_jcurve(out)
+            out = denormalize_joystick_axis_to_8bits(out)
+        
+
         if out != last_throttle:
             ui.write(ecodes.EV_ABS, THROTTLE_AXIS, out)
             last_throttle = out 
@@ -894,28 +926,29 @@ def main():
                             state['dpad_up_held'] = (e.value == 1)
                             state['dpad_down_held'] = (e.value == -1)
                             continue
-                        if e.type == ecodes.EV_ABS and e.code == SNIPER_MODE_BUTTON:
-                            if e.value == 1:
-                                if state['sniper_mode_active']:
-                                    if last_yaw != 0:
-                                        stick_yaw = last_yaw / SNIPING_SENSITIVITY_FACTOR
-                                        emit_yaw()
-                                        ui.syn()  
-                                    if last_pitch != 0:    
-                                        stick_pitch = last_pitch / SNIPING_SENSITIVITY_FACTOR
-                                        emit_pitch()
-                                        ui.syn()  
-                                else:
-                                    if last_yaw != 0:
-                                        stick_yaw = last_yaw * SNIPING_SENSITIVITY_FACTOR
-                                        emit_yaw()
-                                        ui.syn()  
-                                    if last_pitch != 0:    
-                                        stick_pitch = last_pitch * SNIPING_SENSITIVITY_FACTOR
-                                        emit_pitch()
-                                        ui.syn()  
+                        if e.type == ecodes.EV_ABS and e.code == MOD_DPAD_RIGHT_AXIS:
+                            state['dpad_right_held'] = (e.value == 1)
+                            # if e.value == 1:
+                            #     if state['sniper_mode_active']:
+                            #         if last_yaw != 0:
+                            #             stick_yaw = last_yaw / SNIPING_SENSITIVITY_FACTOR
+                            #             emit_yaw()
+                            #             ui.syn()  
+                            #         if last_pitch != 0:    
+                            #             stick_pitch = last_pitch / SNIPING_SENSITIVITY_FACTOR
+                            #             emit_pitch()
+                            #             ui.syn()  
+                            #     else:
+                            #         if last_yaw != 0:
+                            #             stick_yaw = last_yaw * SNIPING_SENSITIVITY_FACTOR
+                            #             emit_yaw()
+                            #             ui.syn()  
+                            #         if last_pitch != 0:    
+                            #             stick_pitch = last_pitch * SNIPING_SENSITIVITY_FACTOR
+                            #             emit_pitch()
+                            #             ui.syn()  
 
-                                state['sniper_mode_active'] = not state['sniper_mode_active']    
+                            #     state['sniper_mode_active'] = not state['sniper_mode_active']    
                                                         
 
                             continue        
@@ -970,10 +1003,12 @@ def main():
                         if e.type == ecodes.EV_ABS and e.code in (L2, R2):
                             if e.code == L2: 
                                 a_l2 = scale_trigger(e.value)
-                                a_l2 = calibrate_axis(a_l2, actual_max = 0.75) 
+                                a_l2 = calibrate_axis(a_l2, actual_max = 0.70) 
                             else:
                                 a_r2 = scale_trigger(e.value)
-                                a_r2 = calibrate_axis(a_r2, actual_max = 0.50) 
+                                a_r2 = calibrate_axis(a_r2, actual_max = 0.45) 
+                                
+
                             if emit_throttle(): 
                                 ui.syn()   
                             continue
@@ -1034,10 +1069,12 @@ def main():
                             if emit_pitch(): ui.syn()
                             #ui.write(e.type, e.code, mix_stick_gyro(stick_pitch, gyro_pitch, 255))
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RX:
+                            #print("1: ", e.value)
                             stick_yaw = normalize_joystick_axis_from_8bits(e.value)   
+                            #print("2: ", stick_yaw)
                             stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw, -0.97, 0.89, 0)
 
-                            #print("INICIO stick_yaw:", stick_yaw)
+                            #print("3: ", stick_yaw)
 
                             stick_pitch_temp = normalize_joystick_axis_from_8bits(last_pitch)
                             _, stick_yaw= apply_radial_calibration_pitch_yaw(stick_pitch_temp, 
