@@ -131,7 +131,8 @@ def normalize_joystick_axis_from_8bits(raw_val: int, is_zero_centered = False) -
     """Converts a range (-128 to 127) cleanly to -1.0..1.0."""
     if not is_zero_centered:
         raw_val = raw_val - 128
-
+    elif raw_val == 0: 
+        return 0
     # 1. Clamp the raw 8-bit signed value first
     clamped_val = max(-128, min(127, raw_val))
     
@@ -139,6 +140,19 @@ def normalize_joystick_axis_from_8bits(raw_val: int, is_zero_centered = False) -
     if clamped_val < 0:
         return clamped_val / 128.0
     return clamped_val / 127.0
+
+def normalize_joystick_axis_from_any_range(raw_val: int, is_zero_centered = False, min_value = 0, max_value = 0) -> float:
+    """Converts a range (-128 to 127) cleanly to -1.0..1.0."""
+    if not is_zero_centered:
+        raw_val = raw_val + min_value
+
+    # 1. Clamp the raw 8-bit signed value first
+    clamped_val = max(min_value, min(max_value, raw_val))
+    
+    # 2. Map cleanly to -1.0..1.0 based on the sign
+    if clamped_val < 0:
+        return clamped_val / -min_value
+    return clamped_val / max_value
 
 
 # def denormalize_joystick_axis(normalized_val: float) -> int:
@@ -557,11 +571,18 @@ def apply_radial_calibration_pitch_yaw(
     pitch: float, 
     yaw: float, 
     lower_deadzone: float = 0.1, 
-    upper_deadzone: float = 0.7,
+    upper_deadzone: float = 0.1,
     sensitivity: float = 1.0,
     return_pitch_axis: bool = True,
     return_yaw_axis: bool = True    
 ) -> tuple[float, float]:
+
+    if return_pitch_axis and yaw == 0:
+        return pitch , 0
+
+    if return_yaw_axis and pitch == 0:
+        return 0 , yaw
+
 
     # 1. Clamp inputs to ensure they don't break logic on hyper-deflected controllers
     pitch = max(-1.0, min(1.0, pitch))
@@ -1043,18 +1064,26 @@ def main():
                         # RIGHT STICK: ROTATION (Combat Sensitivity Adaptive)
                         # ----------------------------------------------------                                                           
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RY:
+                            print("1: ", e.value)
                             stick_pitch = normalize_joystick_axis_from_8bits(e.value)
+                            print("2: ", stick_pitch)
+
+                            #print("stick_pitch:", stick_pitch)
                             stick_pitch = stick_pitch * (-1 if PITCH_INVERT else 1)
                             
                             stick_pitch = calibrate_asymmetric_axis_with_deadzone(stick_pitch, -0.98, 0.90, 0)
-                            #print("INICIO stick_pitch:", stick_pitch)
+                            print("3:", stick_pitch)
+                            
+                            stick_yaw_temp = normalize_joystick_axis_from_8bits(last_yaw, True)
+                            print("last_yaw: ", last_yaw)
+                            print("stick_yaw_temp: ", stick_yaw_temp)                            
+                            # normalize_joystick_axis_from_any_range(last_yaw,
+                            #                                                         is_zero_centered=True,
+                            #                                                          min_value = -90,
+                            #                                                          max_value = 90
+                            #                                                         )
 
-
-
-
-                            stick_yaw_temp = normalize_joystick_axis_from_8bits(last_yaw)
-
-                            #print ("last_yaw/stick_yaw_temp", last_yaw, stick_yaw_temp)
+                            
 
 
                             stick_pitch, _ = apply_radial_calibration_pitch_yaw(stick_pitch,
@@ -1063,7 +1092,8 @@ def main():
                                                                                 SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
                                                                                 return_pitch_axis=True, 
                                                                                 return_yaw_axis=False)
-                            # print("stick_pitch:", stick_pitch)
+                            print("stick_pitch:", stick_pitch)
+                            #print ("last_yaw/stick_yaw_temp", last_yaw, stick_yaw_temp)
                             
                             stick_pitch = denormalize_joystick_axis_to_8bits(stick_pitch)
                             if emit_pitch(): ui.syn()
@@ -1072,11 +1102,14 @@ def main():
                             #print("1: ", e.value)
                             stick_yaw = normalize_joystick_axis_from_8bits(e.value)   
                             #print("2: ", stick_yaw)
-                            stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw, -0.97, 0.89, 0)
+                            #stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw,0.50, 0.60, 0)
 
                             #print("3: ", stick_yaw)
-
-                            stick_pitch_temp = normalize_joystick_axis_from_8bits(last_pitch)
+                            
+                            stick_pitch_temp = normalize_joystick_axis_from_8bits(last_pitch, True)
+                            #print("last_pitch: ", last_pitch)
+                            #print("stick_pitch_temp: ", stick_pitch_temp)
+                            
                             _, stick_yaw= apply_radial_calibration_pitch_yaw(stick_pitch_temp, 
                                                                             stick_yaw, 
                                                                             0,0,
