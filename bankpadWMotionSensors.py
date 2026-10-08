@@ -86,6 +86,228 @@ state = {
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 2D stick outlier rejection
+# ---------------------------------------------------------------------------
+
+outlier_previous_pitch = 0.0
+outlier_previous_yaw = 0.0
+
+outlier_pending = False
+outlier_pending_pitch = 0.0
+outlier_pending_yaw = 0.0
+
+# How much a single sample is allowed to jump before becoming suspicious.
+# 0.45 means a jump of 45% of full stick range is suspicious.
+OUTLIER_JUMP_THRESHOLD = 0.35
+
+# Maximum angular change, in radians, that is considered a normal direction
+# change for a large jump.
+OUTLIER_DIRECTION_THRESHOLD = math.radians(90.0)
+
+
+# A candidate is confirmed as genuine if the next sample continues sufficiently
+# in the same direction.
+OUTLIER_CONFIRM_DOT = 0.50
+
+def reject_stick_outlier(
+    pitch: float,
+    yaw: float,
+) -> tuple[float, float]:
+    """
+    Reject isolated 2D stick spikes while allowing genuine rapid movements.
+
+    The filter is causal:
+
+        previous clean sample
+                    |
+                    v
+              current sample
+                    |
+             suspicious jump?
+               /          \
+             no            yes
+             |              |
+           accept       hold candidate
+                            |
+                       next sample
+                       /       \
+                  confirms    rejects
+                     |           |
+                   accept      previous
+                               sample
+
+    This operates on the complete pitch/yaw vector, rather than treating
+    the two axes independently.
+    """
+
+    global outlier_previous_pitch
+    global outlier_previous_yaw
+    global outlier_pending
+    global outlier_pending_pitch
+    global outlier_pending_yaw
+
+    # ------------------------------------------------------------------
+    # First sample / normal initialization
+    # ------------------------------------------------------------------
+
+    if (
+        outlier_previous_pitch == 0.0
+        and outlier_previous_yaw == 0.0
+        and not outlier_pending
+    ):
+        outlier_previous_pitch = pitch
+        outlier_previous_yaw = yaw
+        return pitch, yaw
+
+    # ------------------------------------------------------------------
+    # If we already have a pending suspicious sample, decide whether
+    # the current sample confirms it.
+    # ------------------------------------------------------------------
+
+    if outlier_pending:
+
+        pending_pitch = outlier_pending_pitch
+        pending_yaw = outlier_pending_yaw
+
+        # Vector from previous clean sample -> pending candidate
+        pending_dx = pending_pitch - outlier_previous_pitch
+        pending_dy = pending_yaw - outlier_previous_yaw
+
+        # Vector from pending candidate -> current sample
+        confirm_dx = pitch - pending_pitch
+        confirm_dy = yaw - pending_yaw
+
+        pending_length = math.hypot(pending_dx, pending_dy)
+        confirm_length = math.hypot(confirm_dx, confirm_dy)
+
+        if pending_length > 1e-6 and confirm_length > 1e-6:
+
+            # Dot product of normalized vectors.
+            #
+            # +1 = exactly same direction
+            #  0 = perpendicular
+            # -1 = opposite direction
+            dot = (
+                pending_dx * confirm_dx
+                + pending_dy * confirm_dy
+            ) / (pending_length * confirm_length)
+
+            # ----------------------------------------------------------
+            # The new samples continue in approximately the same
+            # direction. Therefore the original large movement was
+            # probably legitimate.
+            # ----------------------------------------------------------
+
+            if dot >= OUTLIER_CONFIRM_DOT:
+
+                outlier_previous_pitch = pending_pitch
+                outlier_previous_yaw = pending_yaw
+
+                outlier_pending = False
+
+                # Now accept the current sample as well.
+                outlier_previous_pitch = pitch
+                outlier_previous_yaw = yaw
+
+                return pitch, yaw
+
+        # ------------------------------------------------------------------
+        # The candidate was NOT confirmed.
+        #
+        # Most likely scenario:
+        #
+        #     normal -> huge spike -> normal
+        #
+        # Throw away the candidate and accept the current sample.
+        # ------------------------------------------------------------------
+
+        outlier_pending = False
+        outlier_previous_pitch = pitch
+        outlier_previous_yaw = yaw
+
+        return pitch, yaw
+
+    # ------------------------------------------------------------------
+    # Compare current sample against previous CLEAN sample.
+    # ------------------------------------------------------------------
+
+    dx = pitch - outlier_previous_pitch
+    dy = yaw - outlier_previous_yaw
+
+    jump = math.hypot(dx, dy)
+
+    # Small movement: definitely normal.
+    if jump < OUTLIER_JUMP_THRESHOLD:
+        outlier_previous_pitch = pitch
+        outlier_previous_yaw = yaw
+
+        return pitch, yaw
+
+    # ------------------------------------------------------------------
+    # Large jump.
+    #
+    # Determine whether this is merely a large movement or an implausible
+    # direction change.
+    # ------------------------------------------------------------------
+
+    previous_mag = math.hypot(
+        outlier_previous_pitch,
+        outlier_previous_yaw
+    )
+
+    current_mag = math.hypot(pitch, yaw)
+
+    # If either vector is essentially zero, direction cannot be compared.
+    if previous_mag < 1e-6 or current_mag < 1e-6:
+
+        # A jump from zero to a large value is absolutely allowed.
+        #
+        # This is important: it lets the player slam the stick immediately
+        # without introducing latency.
+        outlier_previous_pitch = pitch
+        outlier_previous_yaw = yaw
+
+        return pitch, yaw
+
+    # Directional dot product.
+    dot = (
+        outlier_previous_pitch * pitch
+        + outlier_previous_yaw * yaw
+    ) / (previous_mag * current_mag)
+
+    dot = max(-1.0, min(1.0, dot))
+
+    angle = math.acos(dot)
+
+    # ------------------------------------------------------------------
+    # Large jump but same-ish direction:
+    #
+    #     (0.1, 0.1) -> (0.8, 0.7)
+    #
+    # This is probably a genuine stick movement.
+    # ------------------------------------------------------------------
+
+    if angle < OUTLIER_DIRECTION_THRESHOLD:
+        outlier_previous_pitch = pitch
+        outlier_previous_yaw = yaw
+
+        return pitch, yaw
+
+    # ------------------------------------------------------------------
+    # Large jump AND large directional change.
+    #
+    # Candidate outlier.
+    # ------------------------------------------------------------------
+
+    outlier_pending = True
+    outlier_pending_pitch = pitch
+    outlier_pending_yaw = yaw
+
+    # Hold the previous clean sample for this event.
+    return outlier_previous_pitch, outlier_previous_yaw
+
+
 def scale_trigger(v):
     if abs(v) <= INNER_DEADZONE:
         return 0.0
@@ -788,6 +1010,12 @@ def main():
     b_l2 = b_r2 = 0.0   # pad B triggers
     last_pitch = last_yaw = last_bank = last_throttle = last_vertical_slide = last_horizontal_slide =  0
 
+    raw_stick_pitch = 0.0
+    raw_stick_yaw = 0.0
+
+    stick_pitch_dirty = False
+    stick_yaw_dirty = False
+
     last_normalized_vertical_slide = last_normalized_horizontal_slide = 0.0
     
     #for mixing of stick and gyro values
@@ -1064,35 +1292,41 @@ def main():
                         # RIGHT STICK: ROTATION (Combat Sensitivity Adaptive)
                         # ----------------------------------------------------                                                           
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RY:
-                            print("1: ", e.value)
+                            #print("1: ", e.value)
                             stick_pitch = normalize_joystick_axis_from_8bits(e.value)
-                            print("2: ", stick_pitch)
+                            #print("2: ", stick_pitch)
 
                             #print("stick_pitch:", stick_pitch)
                             stick_pitch = stick_pitch * (-1 if PITCH_INVERT else 1)
                             
                             stick_pitch = calibrate_asymmetric_axis_with_deadzone(stick_pitch, -0.98, 0.90, 0)
-                            print("3:", stick_pitch)
+                            #print("3:", stick_pitch)
                             
                             stick_yaw_temp = normalize_joystick_axis_from_8bits(last_yaw, True)
-                            print("last_yaw: ", last_yaw)
-                            print("stick_yaw_temp: ", stick_yaw_temp)                            
+                            #print("last_yaw: ", last_yaw)
+                            #print("stick_yaw_temp: ", stick_yaw_temp)                            
                             # normalize_joystick_axis_from_any_range(last_yaw,
                             #                                                         is_zero_centered=True,
                             #                                                          min_value = -90,
                             #                                                          max_value = 90
                             #                                                         )
 
-                            
+                            # --------------------------------------------------------------
+                            # Outlier rejection operates on the complete 2D stick vector.
+                            # --------------------------------------------------------------
 
+                            clean_pitch, clean_yaw = reject_stick_outlier(
+                                stick_pitch,
+                                stick_yaw_temp
+                            )
 
-                            stick_pitch, _ = apply_radial_calibration_pitch_yaw(stick_pitch,
-                                                                                stick_yaw_temp, 
+                            stick_pitch, _ = apply_radial_calibration_pitch_yaw(clean_pitch,
+                                                                                clean_yaw, 
                                                                                 0, 0, 
                                                                                 SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
                                                                                 return_pitch_axis=True, 
                                                                                 return_yaw_axis=False)
-                            print("stick_pitch:", stick_pitch)
+                            #print("stick_pitch:", stick_pitch)
                             #print ("last_yaw/stick_yaw_temp", last_yaw, stick_yaw_temp)
                             
                             stick_pitch = denormalize_joystick_axis_to_8bits(stick_pitch)
@@ -1110,8 +1344,17 @@ def main():
                             #print("last_pitch: ", last_pitch)
                             #print("stick_pitch_temp: ", stick_pitch_temp)
                             
-                            _, stick_yaw= apply_radial_calibration_pitch_yaw(stick_pitch_temp, 
-                                                                            stick_yaw, 
+                            # --------------------------------------------------------------
+                            # Outlier rejection operates on the complete 2D stick vector.
+                            # --------------------------------------------------------------
+
+                            clean_pitch, clean_yaw = reject_stick_outlier(
+                                stick_pitch_temp,
+                                stick_yaw
+                            )
+                           
+                            _, stick_yaw= apply_radial_calibration_pitch_yaw(clean_pitch, 
+                                                                            clean_yaw, 
                                                                             0,0,
                                                                             SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
                                                                             return_pitch_axis=False,
