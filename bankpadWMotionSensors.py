@@ -891,7 +891,7 @@ def apply_radial_calibration_pitch_yaw(
         pitch_out = pitch * scale * sensitivity
     if return_yaw_axis:
         print("yaw:", yaw)
-        yaw_out = yaw * scale * sensitivity * 1.3 #Tune, for difference beatween pitch and yaw in classic Descent
+        yaw_out = yaw * scale * sensitivity #* 1.3 #Tune, for difference beatween pitch and yaw in classic Descent
 
     return pitch_out, yaw_out
 
@@ -1016,7 +1016,7 @@ def main():
     stick_pitch_dirty = False
     stick_yaw_dirty = False
 
-    last_normalized_vertical_slide = last_normalized_horizontal_slide = 0.0
+    #last_normalized_vertical_slide = last_normalized_horizontal_slide = 0.0
     
     #for mixing of stick and gyro values
     stick_yaw = 0.0
@@ -1024,6 +1024,12 @@ def main():
 
     stick_horizontal_slide = 0
     stick_vertical_slide = 0
+
+    raw_slide_x = 0.0
+    raw_slide_y = 0.0
+
+    slide_x_dirty = False
+    slide_y_dirty = False
 
     def emit_pitch():
         nonlocal last_pitch
@@ -1262,112 +1268,200 @@ def main():
                                 ui.syn()   
                             continue
 
-                        elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_Y:
-                            # Normalize the raw stick input to -1.0..+1.0
-                            stick_vertical_slide = normalize_joystick_axis_from_8bits(e.value)
-                            last_normalized_vertical_slide = stick_vertical_slide = stick_vertical_slide  * (-1 if VERTICAL_SLIDE_INVERT else 1)
-                            #stick_horizontal_slide_temp = normalize_joystick_axis_from_8bits(last_horizontal_slide) 
+                        # elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_Y:
+                        #     # Normalize the raw stick input to -1.0..+1.0
+                        #     stick_vertical_slide = normalize_joystick_axis_from_8bits(e.value)
+                        #     last_normalized_vertical_slide = stick_vertical_slide = stick_vertical_slide  * (-1 if VERTICAL_SLIDE_INVERT else 1)
+                        #     #stick_horizontal_slide_temp = normalize_joystick_axis_from_8bits(last_horizontal_slide) 
 
-                            # Apply radial calibration to the stick input
-                            _, stick_vertical_slide = radial_to_square_translation_sliding(last_normalized_horizontal_slide, stick_vertical_slide,return_axis_x=False, return_axis_y=True)
+                        #     # Apply radial calibration to the stick input
+                        #     _, stick_vertical_slide = radial_to_square_translation_sliding(last_normalized_horizontal_slide, stick_vertical_slide,return_axis_x=False, return_axis_y=True)
                             
-                            # Denormalize back to 16-bit range for output
-                            stick_vertical_slide = denormalize_joystick_axis_to_8bits(stick_vertical_slide)
-                            if emit_vertical_slide(): ui.syn()
+                        #     # Denormalize back to 16-bit range for output
+                        #     stick_vertical_slide = denormalize_joystick_axis_to_8bits(stick_vertical_slide)
+                        #     if emit_vertical_slide(): ui.syn()
     
+                        elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_Y:
+                            raw_slide_y = normalize_joystick_axis_from_8bits(e.value)
+
+                            if VERTICAL_SLIDE_INVERT:
+                                raw_slide_y *= -1
+
+                            slide_y_dirty = True
+
+
+                        # elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_X:
+                        #     last_normalized_horizontal_slide =  stick_horizontal_slide = normalize_joystick_axis_from_8bits(e.value)
+                        #     #stick_vertical_slide_temp = normalize_joystick_axis_from_8bits(last_vertical_slide) 
+
+                        #     # Apply radial calibration to the stick input
+                        #     stick_horizontal_slide, _ = radial_to_square_translation_sliding(stick_horizontal_slide, last_normalized_vertical_slide,return_axis_x=True, return_axis_y=False)
+                            
+                        #     # Denormalize back to 8-bit range for output
+                        #     stick_horizontal_slide = denormalize_joystick_axis_to_8bits(stick_horizontal_slide)
+                        #     if emit_horizontal_slide(): ui.syn()  
 
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_X:
-                            last_normalized_horizontal_slide =  stick_horizontal_slide = normalize_joystick_axis_from_8bits(e.value)
-                            #stick_vertical_slide_temp = normalize_joystick_axis_from_8bits(last_vertical_slide) 
-
-                            # Apply radial calibration to the stick input
-                            stick_horizontal_slide, _ = radial_to_square_translation_sliding(stick_horizontal_slide, last_normalized_vertical_slide,return_axis_x=True, return_axis_y=False)
-                            
-                            # Denormalize back to 8-bit range for output
-                            stick_horizontal_slide = denormalize_joystick_axis_to_8bits(stick_horizontal_slide)
-                            if emit_horizontal_slide(): ui.syn()  
+                            raw_slide_x = normalize_joystick_axis_from_8bits(e.value)
+                            slide_x_dirty = True
 
                             
                         # ----------------------------------------------------
                         # RIGHT STICK: ROTATION (Combat Sensitivity Adaptive)
                         # ----------------------------------------------------                                                           
-                        elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RY:
-                            #print("1: ", e.value)
-                            stick_pitch = normalize_joystick_axis_from_8bits(e.value)
-                            #print("2: ", stick_pitch)
+                        # elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RY:
+                        #     #print("1: ", e.value)
+                        #     stick_pitch = normalize_joystick_axis_from_8bits(e.value)
+                        #     #print("2: ", stick_pitch)
 
-                            #print("stick_pitch:", stick_pitch)
-                            stick_pitch = stick_pitch * (-1 if PITCH_INVERT else 1)
+                        #     #print("stick_pitch:", stick_pitch)
+                        #     stick_pitch = stick_pitch * (-1 if PITCH_INVERT else 1)
                             
-                            stick_pitch = calibrate_asymmetric_axis_with_deadzone(stick_pitch, -0.98, 0.90, 0)
-                            #print("3:", stick_pitch)
+                        #     stick_pitch = calibrate_asymmetric_axis_with_deadzone(stick_pitch, -0.98, 0.90, 0)
+                        #     #print("3:", stick_pitch)
                             
-                            stick_yaw_temp = normalize_joystick_axis_from_8bits(last_yaw, True)
-                            #print("last_yaw: ", last_yaw)
-                            #print("stick_yaw_temp: ", stick_yaw_temp)                            
-                            # normalize_joystick_axis_from_any_range(last_yaw,
-                            #                                                         is_zero_centered=True,
-                            #                                                          min_value = -90,
-                            #                                                          max_value = 90
-                            #                                                         )
+                        #     stick_yaw_temp = normalize_joystick_axis_from_8bits(last_yaw, True)
+                        #     #print("last_yaw: ", last_yaw)
+                        #     #print("stick_yaw_temp: ", stick_yaw_temp)                            
+                        #     # normalize_joystick_axis_from_any_range(last_yaw,
+                        #     #                                                         is_zero_centered=True,
+                        #     #                                                          min_value = -90,
+                        #     #                                                          max_value = 90
+                        #     #                                                         )
 
-                            # --------------------------------------------------------------
-                            # Outlier rejection operates on the complete 2D stick vector.
-                            # --------------------------------------------------------------
+                        #     # --------------------------------------------------------------
+                        #     # Outlier rejection operates on the complete 2D stick vector.
+                        #     # --------------------------------------------------------------
 
-                            clean_pitch, clean_yaw = reject_stick_outlier(
-                                stick_pitch,
-                                stick_yaw_temp
-                            )
+                        #     clean_pitch, clean_yaw = reject_stick_outlier(
+                        #         stick_pitch,
+                        #         stick_yaw_temp
+                        #     )
 
-                            stick_pitch, _ = apply_radial_calibration_pitch_yaw(clean_pitch,
-                                                                                clean_yaw, 
-                                                                                0, 0, 
-                                                                                SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
-                                                                                return_pitch_axis=True, 
-                                                                                return_yaw_axis=False)
-                            #print("stick_pitch:", stick_pitch)
-                            #print ("last_yaw/stick_yaw_temp", last_yaw, stick_yaw_temp)
+                        #     stick_pitch, _ = apply_radial_calibration_pitch_yaw(clean_pitch,
+                        #                                                         clean_yaw, 
+                        #                                                         0, 0, 
+                        #                                                         SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
+                        #                                                         return_pitch_axis=True, 
+                        #                                                         return_yaw_axis=False)
+                        #     #print("stick_pitch:", stick_pitch)
+                        #     #print ("last_yaw/stick_yaw_temp", last_yaw, stick_yaw_temp)
                             
-                            stick_pitch = denormalize_joystick_axis_to_8bits(stick_pitch)
-                            if emit_pitch(): ui.syn()
-                            #ui.write(e.type, e.code, mix_stick_gyro(stick_pitch, gyro_pitch, 255))
-                        elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RX:
-                            #print("1: ", e.value)
-                            stick_yaw = normalize_joystick_axis_from_8bits(e.value)   
-                            #print("2: ", stick_yaw)
-                            #stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw,0.50, 0.60, 0)
+                        #     stick_pitch = denormalize_joystick_axis_to_8bits(stick_pitch)
+                        #     if emit_pitch(): ui.syn()
+                        #     #ui.write(e.type, e.code, mix_stick_gyro(stick_pitch, gyro_pitch, 255))
+                        # elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RX:
+                        #     #print("1: ", e.value)
+                        #     stick_yaw = normalize_joystick_axis_from_8bits(e.value)   
+                        #     #print("2: ", stick_yaw)
+                        #     #stick_yaw = calibrate_asymmetric_axis_with_deadzone(stick_yaw,0.50, 0.60, 0)
 
-                            #print("3: ", stick_yaw)
+                        #     #print("3: ", stick_yaw)
                             
-                            stick_pitch_temp = normalize_joystick_axis_from_8bits(last_pitch, True)
-                            #print("last_pitch: ", last_pitch)
-                            #print("stick_pitch_temp: ", stick_pitch_temp)
+                        #     stick_pitch_temp = normalize_joystick_axis_from_8bits(last_pitch, True)
+                        #     #print("last_pitch: ", last_pitch)
+                        #     #print("stick_pitch_temp: ", stick_pitch_temp)
                             
-                            # --------------------------------------------------------------
-                            # Outlier rejection operates on the complete 2D stick vector.
-                            # --------------------------------------------------------------
+                        #     # --------------------------------------------------------------
+                        #     # Outlier rejection operates on the complete 2D stick vector.
+                        #     # --------------------------------------------------------------
 
-                            clean_pitch, clean_yaw = reject_stick_outlier(
-                                stick_pitch_temp,
-                                stick_yaw
-                            )
+                        #     clean_pitch, clean_yaw = reject_stick_outlier(
+                        #         stick_pitch_temp,
+                        #         stick_yaw
+                        #     )
                            
-                            _, stick_yaw= apply_radial_calibration_pitch_yaw(clean_pitch, 
-                                                                            clean_yaw, 
-                                                                            0,0,
-                                                                            SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
-                                                                            return_pitch_axis=False,
-                                                                            return_yaw_axis=True)
-                            #print("stick_pitch_temp:", stick_pitch_temp)
+                        #     _, stick_yaw= apply_radial_calibration_pitch_yaw(clean_pitch, 
+                        #                                                     clean_yaw, 
+                        #                                                     0,0,
+                        #                                                     SNIPING_SENSITIVITY_FACTOR if state['sniper_mode_active'] else 1, 
+                        #                                                     return_pitch_axis=False,
+                        #                                                     return_yaw_axis=True)
+                        #     #print("stick_pitch_temp:", stick_pitch_temp)
                        
-                            #print("stick_yaw:", stick_yaw)
-                            stick_yaw = denormalize_joystick_axis_to_8bits(stick_yaw)
+                        #     #print("stick_yaw:", stick_yaw)
+                        #     stick_yaw = denormalize_joystick_axis_to_8bits(stick_yaw)
 
 
 
-                            if emit_yaw(): ui.syn()
+                        #     if emit_yaw(): ui.syn()
+                        elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RY:
+                            raw_stick_pitch = normalize_joystick_axis_from_8bits(e.value)
+
+                            raw_stick_pitch *= (-1 if PITCH_INVERT else 1)
+
+                            raw_stick_pitch = calibrate_asymmetric_axis_with_deadzone(
+                                raw_stick_pitch,
+                                -0.98,
+                                0.90,
+                                0
+                            )
+
+                            stick_pitch_dirty = True
+                        elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RX:
+                            raw_stick_yaw = normalize_joystick_axis_from_8bits(e.value)
+
+                            stick_yaw_dirty = True    
+                        # elif e.type == ecodes.EV_SYN:
+                        #     ui.syn()
                         elif e.type == ecodes.EV_SYN:
+
+                            if slide_x_dirty or slide_y_dirty:
+
+                                    slide_x, slide_y = radial_to_square_translation_sliding(
+                                        raw_slide_x,
+                                        raw_slide_y
+                                    )
+
+                                    stick_horizontal_slide = denormalize_joystick_axis_to_8bits(
+                                        slide_x
+                                    )
+
+                                    stick_vertical_slide = denormalize_joystick_axis_to_8bits(
+                                        slide_y
+                                    )
+
+                                    emit_horizontal_slide()
+                                    emit_vertical_slide()
+
+                                    slide_x_dirty = False
+                                    slide_y_dirty = False
+
+                            if stick_pitch_dirty or stick_yaw_dirty:
+
+                                clean_pitch, clean_yaw = reject_stick_outlier(
+                                    raw_stick_pitch,
+                                    raw_stick_yaw
+                                )
+
+                                # clean_pitch, clean_yaw = raw_stick_pitch, raw_stick_yaw
+
+                                processed_pitch, processed_yaw = apply_radial_calibration_pitch_yaw(
+                                    clean_pitch,
+                                    clean_yaw,
+                                    0,
+                                    0,
+                                    SNIPING_SENSITIVITY_FACTOR
+                                        if state['sniper_mode_active']
+                                        else 1.0,
+                                    return_pitch_axis=True,
+                                    return_yaw_axis=True
+                                )
+
+                                stick_pitch = denormalize_joystick_axis_to_8bits(
+                                    processed_pitch
+                                )
+
+                                stick_yaw = denormalize_joystick_axis_to_8bits(
+                                    processed_yaw
+                                )
+
+                                emit_pitch()
+                                emit_yaw()
+
+                                stick_pitch_dirty = False
+                                stick_yaw_dirty = False
+
                             ui.syn()
                         else:
                             ui.write(e.type, e.code, e.value)
