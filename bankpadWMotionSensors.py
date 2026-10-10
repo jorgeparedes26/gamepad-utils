@@ -799,11 +799,11 @@ def apply_radial_calibration_pitch_yaw(
     return_yaw_axis: bool = True    
 ) -> tuple[float, float]:
 
-    if return_pitch_axis and yaw == 0:
-        return pitch , 0
+    # if return_pitch_axis and yaw == 0:
+    #     return pitch , 0
 
-    if return_yaw_axis and pitch == 0:
-        return 0 , yaw
+    # if return_yaw_axis and pitch == 0:
+    #     return 0 , yaw
 
 
     # 1. Clamp inputs to ensure they don't break logic on hyper-deflected controllers
@@ -1261,7 +1261,7 @@ def main():
                                 a_l2 = calibrate_axis(a_l2, actual_max = 0.70) 
                             else:
                                 a_r2 = scale_trigger(e.value)
-                                a_r2 = calibrate_axis(a_r2, actual_max = 0.45) 
+                                a_r2 = calibrate_axis(a_r2, actual_max = 0.40) 
                                 
 
                             if emit_throttle(): 
@@ -1436,25 +1436,29 @@ def main():
 
                                 # clean_pitch, clean_yaw = raw_stick_pitch, raw_stick_yaw
 
-                                processed_pitch, processed_yaw = apply_radial_calibration_pitch_yaw(
-                                    clean_pitch,
-                                    clean_yaw,
-                                    0,
-                                    0,
-                                    SNIPING_SENSITIVITY_FACTOR
-                                        if state['sniper_mode_active']
-                                        else 1.0,
-                                    return_pitch_axis=True,
-                                    return_yaw_axis=True
-                                )
+                                print("clean_yaw:", clean_yaw)
+                                # processed_pitch, processed_yaw = apply_radial_calibration_pitch_yaw(
+                                #     clean_pitch,
+                                #     clean_yaw,
+                                #     0,
+                                #     0,
+                                #     1.0,
+                                #     return_pitch_axis=True,
+                                #     return_yaw_axis=True
+                                # )
 
+                                processed_pitch, processed_yaw = clean_pitch, clean_yaw
+                                
                                 stick_pitch = denormalize_joystick_axis_to_8bits(
                                     processed_pitch
                                 )
 
+                                print("processed_yaw:", processed_yaw)
                                 stick_yaw = denormalize_joystick_axis_to_8bits(
                                     processed_yaw
                                 )
+                                print("stick_yaw:", stick_yaw)
+
 
                                 emit_pitch()
                                 emit_yaw()
