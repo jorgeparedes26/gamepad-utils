@@ -1258,7 +1258,8 @@ def main():
                         if e.type == ecodes.EV_ABS and e.code in (L2, R2):
                             if e.code == L2: 
                                 a_l2 = scale_trigger(e.value)
-                                a_l2 = calibrate_axis(a_l2, actual_max = 0.70) 
+                                a_l2 = apply_deadzone(a_l2, 0.11, 0.70)
+                                #a_l2 = calibrate_axis(a_l2, actual_max = 0.70) 
                             else:
                                 a_r2 = scale_trigger(e.value)
                                 a_r2 = calibrate_axis(a_r2, actual_max = 0.40) 
@@ -1393,13 +1394,22 @@ def main():
                             raw_stick_pitch = calibrate_asymmetric_axis_with_deadzone(
                                 raw_stick_pitch,
                                 -0.98,
-                                0.90,
+                                0.89,
                                 0
                             )
 
                             stick_pitch_dirty = True
                         elif e.type == ecodes.EV_ABS and e.code == ecodes.ABS_RX:
                             raw_stick_yaw = normalize_joystick_axis_from_8bits(e.value)
+                            
+                            raw_stick_yaw = calibrate_asymmetric_axis_with_deadzone(
+                                raw_stick_yaw,
+                                -1,
+                                1,
+                                0.06
+                            )
+
+
 
                             stick_yaw_dirty = True    
                         # elif e.type == ecodes.EV_SYN:
@@ -1436,7 +1446,7 @@ def main():
 
                                 # clean_pitch, clean_yaw = raw_stick_pitch, raw_stick_yaw
 
-                                print("clean_yaw:", clean_yaw)
+                                # print("clean_yaw:", clean_yaw)
                                 # processed_pitch, processed_yaw = apply_radial_calibration_pitch_yaw(
                                 #     clean_pitch,
                                 #     clean_yaw,
@@ -1453,12 +1463,14 @@ def main():
                                     processed_pitch
                                 )
 
-                                print("processed_yaw:", processed_yaw)
+                                #print("processed_yaw:", processed_yaw)
                                 stick_yaw = denormalize_joystick_axis_to_8bits(
                                     processed_yaw
                                 )
-                                print("stick_yaw:", stick_yaw)
-
+                                
+                                
+                                #print("stick_PITCH:", stick_pitch)
+                                #print("stick_yaw:", stick_yaw)
 
                                 emit_pitch()
                                 emit_yaw()
